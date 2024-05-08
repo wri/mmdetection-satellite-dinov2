@@ -5,4 +5,6 @@ mmdetection-satellite-dinov2
 
 # Overview
 
+![](https://raw.githubusercontent.com/wri/mmdetection-satellite-dinov2/main/resources/qualitative-results.jpg)
+
 This repository contains the (**WORK IN PROGRESS**) integration of the DiNOV2 SSL layer from [Meta and WRI](https://github.com/facebookresearch/HighResCanopyHeight) with MMDetection. MMdet 3.X has been updated to include the SSL layer as a backbone. Example configuration for training a ViTDet with a Cascade RCNN head on a COCO dataset can be found in the `configs-dino` folder.
