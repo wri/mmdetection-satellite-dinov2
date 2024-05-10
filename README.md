@@ -8,3 +8,27 @@ mmdetection-satellite-dinov2
 ![](https://raw.githubusercontent.com/wri/mmdetection-satellite-dinov2/main/resources/qualitative-results.jpg)
 
 This repository contains the (**WORK IN PROGRESS**) integration of the DiNOV2 SSL layer from [Meta and WRI](https://github.com/facebookresearch/HighResCanopyHeight) with MMDetection. MMdet 3.X has been updated to include the SSL layer as a backbone. Example configuration for training a ViTDet with a Cascade RCNN head on a COCO-style dataset can be found in the `configs-dino` folder.
+
+# Getting started
+
+```
+conda create --name mmdet python=3.10 
+conda activate mmdet
+pip install torch==2.2.2+cu121 torchvision==0.17.2+cu121 --index-url https://download.pytorch.org/whl/cu121
+pip install future tensorboard
+
+pip install -U openmim
+mim install mmcv-full
+
+import torch
+print(torch.__version__, torch.cuda.is_available())
+
+# Check MMDetection installation
+import mmdet
+print(mmdet.__version__)
+
+# Check mmcv installation
+from mmcv.ops import get_compiling_cuda_version, get_compiler_version
+print(get_compiling_cuda_version())
+print(get_compiler_version())
+```
