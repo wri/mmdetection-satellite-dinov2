@@ -32,3 +32,19 @@ from mmcv.ops import get_compiling_cuda_version, get_compiler_version
 print(get_compiling_cuda_version())
 print(get_compiler_version())
 ```
+
+# Training
+
+```
+# import torch
+from mmdet.apis import init_detector
+from mmengine.runner import Runner
+from mmengine.config import Config, DictAction
+
+config='path/to/config.py'
+checkpoint = 'path/to/SSLhuge_satellite.pth'
+cfg = Config.fromfile(config)
+cfg.work_dir = osp.join(path/to/work/dir/')
+runner = Runner.from_cfg(cfg)
+runner.train()
+```
