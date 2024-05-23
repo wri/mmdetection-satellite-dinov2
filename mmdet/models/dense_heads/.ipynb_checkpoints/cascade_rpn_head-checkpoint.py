@@ -58,12 +58,14 @@ class AdaptiveConv(BaseModule):
         groups: int = 1,
         bias: bool = False,
         adapt_type: str = 'dilation',
+        type: str = 'dilation',
         init_cfg: MultiConfig = dict(
             type='Normal', std=0.01, override=dict(name='conv'))
     ) -> None:
         super().__init__(init_cfg=init_cfg)
         assert adapt_type in ['offset', 'dilation']
-        self.adapt_type = adapt_type
+        self.adapt_type = type
+        self.type = self.adapt_type
 
         assert kernel_size == 3, 'Adaptive conv only supports kernels 3'
         if self.adapt_type == 'offset':
@@ -92,12 +94,14 @@ class AdaptiveConv(BaseModule):
             N, _, H, W = x.shape
             assert offset is not None
             assert H * W == offset.shape[1]
+            print(offset.shape)
             # reshape [N, NA, 18] to (N, 18, H, W)
+            # [1, 16384, 18] -> [1, 18, 16384, 18
             offset = offset.permute(0, 2, 1).reshape(N, -1, H, W)
             offset = offset.contiguous()
             x = self.conv(x, offset)
         else:
-            assert offset is None
+            #assert offset is None
             x = self.conv(x)
         return x
 
@@ -565,6 +569,7 @@ class StageCascadeRPNHead(RPNHead):
         Returns:
             dict[str, Tensor]: A dictionary of loss components.
         """
+        print("The loss_by_feat of the StageCascacde is being called")
         featmap_sizes = [featmap.size()[-2:] for featmap in bbox_preds]
         cls_reg_targets = self.get_targets(
             anchor_list,

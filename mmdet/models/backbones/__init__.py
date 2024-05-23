@@ -18,11 +18,13 @@ from .ssd_vgg import SSDVGG
 from .swin import SwinTransformer
 from .trident_resnet import TridentResNet
 from .SSLVisionTransformer import SSLVisionTransformer
+from .vit_rvsa_mtp_branches import RVSA_MTP_branches
+
 
 __all__ = [
     'RegNet', 'ResNet', 'ResNetV1d', 'ResNeXt', 'SSDVGG', 'HRNet',
     'MobileNetV2', 'Res2Net', 'HourglassNet', 'DetectoRS_ResNet',
     'DetectoRS_ResNeXt', 'Darknet', 'ResNeSt', 'TridentResNet', 'CSPDarknet',
     'SwinTransformer', 'PyramidVisionTransformer',
-    'PyramidVisionTransformerV2', 'EfficientNet', 'CSPNeXt', 'SSLVisionTransformer'
+    'PyramidVisionTransformerV2', 'EfficientNet', 'CSPNeXt', 'SSLVisionTransformer', 'RVSA_MTP_branches'
 ]

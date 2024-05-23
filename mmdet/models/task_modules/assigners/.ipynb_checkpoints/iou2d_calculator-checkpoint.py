@@ -128,7 +128,7 @@ class BboxDistanceMetric(object):
 
 
 def bbox_overlaps(bboxes1, bboxes2, mode='iou', is_aligned=False, eps=1e-6, constant=12.8):
-    assert mode in ['iou', 'iof', 'giou', 'normalized_giou', 'ciou', 'diou', 'wasserstein'], f'Unsupported mode {mode}'
+    assert mode in ['iou', 'iof', 'giou', 'normalized_giou', 'ciou', 'diou', 'wasserstein', 'kl'], f'Unsupported mode {mode}'
     # Either the boxes are empty or the length of boxes's last dimenstion is 4
     assert (bboxes1.size(-1) == 4 or bboxes1.size(0) == 0)
     assert (bboxes2.size(-1) == 4 or bboxes2.size(0) == 0)
@@ -182,6 +182,22 @@ def bbox_overlaps(bboxes1, bboxes2, mode='iou', is_aligned=False, eps=1e-6, cons
 
     if mode == 'giou':
         return gious
+
+    if mode == 'kl':
+        center1 = (bboxes1[..., :, None, :2] + bboxes1[..., :, None, 2:]) / 2
+        center2 = (bboxes2[..., None, :, :2] + bboxes2[..., None, :, 2:]) / 2
+        whs = center1[..., :2] - center2[..., :2]
+
+        w1 = bboxes1[..., :, None, 2] - bboxes1[..., :, None, 0] + eps
+        h1 = bboxes1[..., :, None, 3] - bboxes1[..., :, None, 1] + eps
+        w2 = bboxes2[..., None, :, 2] - bboxes2[..., None, :, 0] + eps
+        h2 = bboxes2[..., None, :, 3] - bboxes2[..., None, :, 1] + eps
+
+        kl=(w2**2/w1**2+h2**2/h1**2+4*whs[..., 0]**2/w1**2+4*whs[..., 1]**2/h1**2+torch.log(w1**2/w2**2)+torch.log(h1**2/h2**2)-2)/2
+
+        kld = 1/(1+kl)
+
+        return kld
 
     if mode == 'normalized_giou':
         gious = (1 + gious) / 2

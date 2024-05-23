@@ -1,113 +1,44 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 from __future__ import division
 import copy
-from typing import Dict, List, Optional, Tuple, Union
+import warnings
 
 import torch
 import torch.nn as nn
-from mmcv.ops import DeformConv2d
-from mmengine.config import ConfigDict
-from mmengine.model import BaseModule, ModuleList
-from mmengine.structures import InstanceData
+#from mmcv import ConfigDict
+from mmcv.ops import batched_nms
+from mmengine.model import ModuleList
+from typing import Dict, List, Optional, Tuple, Union
 from torch import Tensor
+from mmengine.config import ConfigDict
+from mmengine.structures import InstanceData
 
-from mmdet.registry import MODELS, TASK_UTILS
-from mmdet.structures import SampleList
+
 from mmdet.utils import (ConfigType, InstanceList, MultiConfig,
                          OptInstanceList, OptMultiConfig)
-from ..task_modules.assigners import RegionAssigner
+
+from ..task_modules.prior_generators import anchor_inside_flags
+from mmdet.models.task_modules.builder import build_assigner, build_sampler
+from mmdet.structures import SampleList
+
+                        
+from mmdet.models.utils import images_to_levels, multi_apply
+from mmdet.models.task_modules.assigners.dynamic_assigner import DynamicAssigner
+from mmdet.models.utils import select_single_mlvl
+from mmdet.registry import MODELS, TASK_UTILS
+#from mmdet.models.builder import build_head
+from .base_dense_head import BaseDenseHead
 from ..task_modules.samplers import PseudoSampler
+
+from .dense_test_mixins import BBoxTestMixin
+from .rpn_head import RPNHead
 from ..utils import (images_to_levels, multi_apply, select_single_mlvl,
                      unpack_gt_instances)
-from .base_dense_head import BaseDenseHead
-from .rpn_head import RPNHead
-
-
-class AdaptiveConv(BaseModule):
-    """AdaptiveConv used to adapt the sampling location with the anchors.
-
-    Args:
-        in_channels (int): Number of channels in the input image.
-        out_channels (int): Number of channels produced by the convolution.
-        kernel_size (int or tuple[int]): Size of the conv kernel.
-            Defaults to 3.
-        stride (int or tuple[int]): Stride of the convolution. Defaults to 1.
-        padding (int or tuple[int]): Zero-padding added to both sides of
-            the input. Defaults to 1.
-        dilation (int or tuple[int]): Spacing between kernel elements.
-            Defaults to 3.
-        groups (int): Number of blocked connections from input channels to
-            output channels. Defaults to 1.
-        bias (bool): If set True, adds a learnable bias to the output.
-            Defaults to False.
-        adapt_type (str): Type of adaptive conv, can be either ``offset``
-            (arbitrary anchors) or 'dilation' (uniform anchor).
-            Defaults to 'dilation'.
-        init_cfg (:obj:`ConfigDict` or list[:obj:`ConfigDict`] or dict or \
-            list[dict]): Initialization config dict.
-    """
-
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        kernel_size: Union[int, Tuple[int]] = 3,
-        stride: Union[int, Tuple[int]] = 1,
-        padding: Union[int, Tuple[int]] = 1,
-        dilation: Union[int, Tuple[int]] = 3,
-        groups: int = 1,
-        bias: bool = False,
-        adapt_type: str = 'dilation',
-        type: str = 'dilation',
-        init_cfg: MultiConfig = dict(
-            type='Normal', std=0.01, override=dict(name='conv'))
-    ) -> None:
-        super().__init__(init_cfg=init_cfg)
-        assert adapt_type in ['offset', 'dilation']
-        self.adapt_type = type
-        self.type = self.adapt_type
-
-        assert kernel_size == 3, 'Adaptive conv only supports kernels 3'
-        if self.adapt_type == 'offset':
-            assert stride == 1 and padding == 1 and groups == 1, \
-                'Adaptive conv offset mode only supports padding: {1}, ' \
-                f'stride: {1}, groups: {1}'
-            self.conv = DeformConv2d(
-                in_channels,
-                out_channels,
-                kernel_size,
-                padding=padding,
-                stride=stride,
-                groups=groups,
-                bias=bias)
-        else:
-            self.conv = nn.Conv2d(
-                in_channels,
-                out_channels,
-                kernel_size,
-                padding=dilation,
-                dilation=dilation)
-
-    def forward(self, x: Tensor, offset: Tensor) -> Tensor:
-        """Forward function."""
-        if self.adapt_type == 'offset':
-            N, _, H, W = x.shape
-            assert offset is not None
-            assert H * W == offset.shape[1]
-            print(offset.shape)
-            # reshape [N, NA, 18] to (N, 18, H, W)
-            # [1, 16384, 18] -> [1, 18, 16384, 18
-            offset = offset.permute(0, 2, 1).reshape(N, -1, H, W)
-            offset = offset.contiguous()
-            x = self.conv(x, offset)
-        else:
-            #assert offset is None
-            x = self.conv(x)
-        return x
+from .cascade_rpn_head import AdaptiveConv
 
 
 @MODELS.register_module()
-class StageCascadeRPNHead(RPNHead):
+class StageRefineRPNHead(RPNHead):
     """Stage of CascadeRPNHead.
 
     Args:
@@ -128,21 +59,30 @@ class StageCascadeRPNHead(RPNHead):
                      scales=[8],
                      ratios=[1.0],
                      strides=[4, 8, 16, 32, 64]),
-                 adapt_cfg: ConfigType = dict(type='dilation', dilation=3),
-                 bridged_feature: bool = False,
+                 refine_cfg: ConfigType = dict(
+                    type='dilation',
+                    dilation=3),
+                 num_classes = 1,
+                 refine_reg_factor = 50.0,
+                 refined_feature =False,
+                 anchor_lvl = False,
+                 sampling=True,
                  with_cls: bool = True,
                  init_cfg: OptMultiConfig = None,
                  **kwargs) -> None:
         self.with_cls = with_cls
         self.anchor_strides = anchor_generator['strides']
         self.anchor_scales = anchor_generator['scales']
-        self.bridged_feature = bridged_feature
-        self.adapt_cfg = adapt_cfg
+        self.refined_feature = refined_feature
+        self.refine_cfg = refine_cfg
+        self.num_classes = num_classes
+        self.sampling = sampling
         super().__init__(
             in_channels=in_channels,
             anchor_generator=anchor_generator,
             init_cfg=init_cfg,
             **kwargs)
+        self.num_base_anchors = self.anchor_generator.num_base_anchors[0]
 
         # override sampling and sampler
         if self.train_cfg:
@@ -162,10 +102,10 @@ class StageCascadeRPNHead(RPNHead):
 
     def _init_layers(self) -> None:
         """Init layers of a CascadeRPN stage."""
-        adapt_cfg = copy.deepcopy(self.adapt_cfg)
-        adapt_cfg['adapt_type'] = adapt_cfg.pop('type')
+        refine_cfg = copy.deepcopy(self.refine_cfg)
+        refine_cfg['adapt_type'] = refine_cfg.pop('type')
         self.rpn_conv = AdaptiveConv(self.in_channels, self.feat_channels,
-                                     **adapt_cfg)
+                                     **refine_cfg)
         if self.with_cls:
             self.rpn_cls = nn.Conv2d(self.feat_channels,
                                      self.num_anchors * self.cls_out_channels,
@@ -175,13 +115,13 @@ class StageCascadeRPNHead(RPNHead):
 
     def forward_single(self, x: Tensor, offset: Tensor) -> Tuple[Tensor]:
         """Forward function of single scale."""
-        bridged_x = x
+        refined_x = x
         x = self.relu(self.rpn_conv(x, offset))
-        if self.bridged_feature:
-            bridged_x = x  # update feature
+        if self.refined_feature:
+            refined_x = x  # update feature
         cls_score = self.rpn_cls(x) if self.with_cls else None
         bbox_pred = self.rpn_reg(x)
-        return bridged_x, cls_score, bbox_pred
+        return refined_x, cls_score, bbox_pred
 
     def forward(
             self,
@@ -230,17 +170,17 @@ class StageCascadeRPNHead(RPNHead):
         pred_instances = InstanceData()
         pred_instances.priors = flat_anchors
         pred_instances.valid_flags = valid_flags
-
-        assign_result = self.assigner.assign(
+        #print(num_level_anchors, num_level_anchors.dtype)
+        assign_result, ign = self.assigner.assign(
             pred_instances,
             gt_instances,
             img_meta,
             featmap_sizes,
-            num_level_anchors,
-            self.anchor_scales[0],
-            self.anchor_strides,
-            gt_instances_ignore=gt_instances_ignore,
-            allowed_border=self.train_cfg['allowed_border'])
+            num_level_anchors)
+            #self.anchor_scales[0],
+            #self.anchor_strides,
+            #gt_instances_ignore=gt_instances_ignore,
+            #allowed_border=self.train_cfg['allowed_border'])
         sampling_result = self.sampler.sample(assign_result, pred_instances,
                                               gt_instances)
 
@@ -322,6 +262,9 @@ class StageCascadeRPNHead(RPNHead):
 
         # anchor number of multi levels
         num_level_anchors = [anchors.size(0) for anchors in anchor_list[0]]
+        
+        num_base_anchor_list = [self.num_base_anchors for i in range(num_imgs)]
+        num_base_anchor_list = tuple([int(s) for s in num_base_anchor_list])
         # concat all level anchors to a single tensor
         concat_anchor_list = []
         concat_valid_flag_list = []
@@ -340,7 +283,7 @@ class StageCascadeRPNHead(RPNHead):
              batch_img_metas,
              batch_gt_instances_ignore,
              featmap_sizes=featmap_sizes,
-             num_level_anchors=num_level_anchors)
+             num_level_anchors=self.num_base_anchors)
         # no valid anchors
         if any([labels is None for labels in all_labels]):
             return None
@@ -405,7 +348,7 @@ class StageCascadeRPNHead(RPNHead):
                   ``PseudoSampler``, ``avg_factor`` is usually equal to the
                   number of positive priors.
         """
-        if isinstance(self.assigner, RegionAssigner):
+        if isinstance(self.assigner, DynamicAssigner):
             cls_reg_targets = self.region_targets(
                 anchor_list,
                 valid_flag_list,
@@ -569,7 +512,6 @@ class StageCascadeRPNHead(RPNHead):
         Returns:
             dict[str, Tensor]: A dictionary of loss components.
         """
-        print("The loss_by_feat of the StageCascacde is being called")
         featmap_sizes = [featmap.size()[-2:] for featmap in bbox_preds]
         cls_reg_targets = self.get_targets(
             anchor_list,
@@ -793,7 +735,7 @@ class StageCascadeRPNHead(RPNHead):
         anchor_list, valid_flag_list = self.get_anchors(
             featmap_sizes, batch_img_metas, device=device)
 
-        if self.adapt_cfg['type'] == 'offset':
+        if self.refine_cfg['type'] == 'offset':
             offset_list = self.anchor_offset(anchor_list, self.anchor_strides,
                                              featmap_sizes)
         else:
@@ -839,7 +781,7 @@ class StageCascadeRPNHead(RPNHead):
         anchor_list, valid_flag_list = self.get_anchors(
             featmap_sizes, batch_img_metas, device=device)
 
-        if self.adapt_cfg['type'] == 'offset':
+        if self.refine_cfg['type'] == 'offset':
             offset_list = self.anchor_offset(anchor_list, self.anchor_strides,
                                              featmap_sizes)
         else:
@@ -887,7 +829,7 @@ class StageCascadeRPNHead(RPNHead):
         anchor_list, _ = self.get_anchors(
             featmap_sizes, batch_img_metas, device=device)
 
-        if self.adapt_cfg['type'] == 'offset':
+        if self.refine_cfg['type'] == 'offset':
             offset_list = self.anchor_offset(anchor_list, self.anchor_strides,
                                              featmap_sizes)
         else:
@@ -904,7 +846,7 @@ class StageCascadeRPNHead(RPNHead):
 
 
 @MODELS.register_module()
-class CascadeRPNHead(BaseDenseHead):
+class CRPNHead(BaseDenseHead):
     """The CascadeRPNHead will predict more accurate region proposals, which is
     required for two-stage detectors (such as Fast/Faster R-CNN). CascadeRPN
     consists of a sequence of RPNStage to progressively improve the accuracy of
@@ -980,7 +922,7 @@ class CascadeRPNHead(BaseDenseHead):
         for i in range(self.num_stages):
             stage = self.stages[i]
 
-            if stage.adapt_cfg['type'] == 'offset':
+            if stage.refine_cfg['type'] == 'offset':
                 offset_list = stage.anchor_offset(anchor_list,
                                                   stage.anchor_strides,
                                                   featmap_sizes)
@@ -1038,7 +980,7 @@ class CascadeRPNHead(BaseDenseHead):
         for i in range(self.num_stages):
             stage = self.stages[i]
 
-            if stage.adapt_cfg['type'] == 'offset':
+            if stage.refine_cfg['type'] == 'offset':
                 offset_list = stage.anchor_offset(anchor_list,
                                                   stage.anchor_strides,
                                                   featmap_sizes)
@@ -1095,7 +1037,7 @@ class CascadeRPNHead(BaseDenseHead):
 
         for i in range(self.num_stages):
             stage = self.stages[i]
-            if stage.adapt_cfg['type'] == 'offset':
+            if stage.refine_cfg['type'] == 'offset':
                 offset_list = stage.anchor_offset(anchor_list,
                                                   stage.anchor_strides,
                                                   featmap_sizes)

@@ -120,13 +120,16 @@ class BaseDenseHead(BaseModule, metaclass=ABCMeta):
 
         loss_inputs = outs + (batch_gt_instances, batch_img_metas,
                               batch_gt_instances_ignore)
-        losses = self.loss_by_feat(*loss_inputs)
+        #print(f"The length of loss_inputs is {len(loss_inputs)}")
+        losses = self.loss_by_feat(**loss_inputs)
+        #print("The loss gets called by loss")
         return losses
 
     @abstractmethod
     def loss_by_feat(self, **kwargs) -> dict:
         """Calculate the loss based on the features extracted by the detection
         head."""
+        #print("The loss by feat of base dense head is being called")
         pass
 
     def loss_and_predict(
@@ -162,7 +165,11 @@ class BaseDenseHead(BaseModule, metaclass=ABCMeta):
 
         loss_inputs = outs + (batch_gt_instances, batch_img_metas,
                               batch_gt_instances_ignore)
+        #print(f"The length of loss_inputs is {len(loss_inputs)}")
+        #print(self.loss_by_feat)
         losses = self.loss_by_feat(*loss_inputs)
+        #print("The loss gets called by loss_and_predict")
+
 
         predictions = self.predict_by_feat(
             *outs, batch_img_metas=batch_img_metas, cfg=proposal_cfg)

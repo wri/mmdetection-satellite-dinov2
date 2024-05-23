@@ -20,6 +20,8 @@ from .task_aligned_assigner import TaskAlignedAssigner
 from .topk_hungarian_assigner import TopkHungarianAssigner
 from .uniform_assigner import UniformAssigner
 from .ranking_assigner import RankingAssigner
+from .dynamic_assigner import DynamicAssigner
+from .hierarchical_assigner import HieAssigner
 
 __all__ = [
     'BaseAssigner', 'BinaryFocalLossCost', 'MaxIoUAssigner',
@@ -29,5 +31,5 @@ __all__ = [
     'TaskAlignedAssigner', 'TopkHungarianAssigner', 'BBoxL1Cost',
     'ClassificationCost', 'CrossEntropyLossCost', 'DiceCost', 'FocalLossCost',
     'IoUCost', 'BboxOverlaps2D', 'DynamicSoftLabelAssigner',
-    'MultiInstanceAssigner', 'BboxOverlaps2D_GLIP', 'BboxDistanceMetric', 'RankingAssigner'
+    'MultiInstanceAssigner', 'BboxOverlaps2D_GLIP', 'BboxDistanceMetric', 'RankingAssigner', 'DynamicAssigner', 'HieAssigner'
 ]

@@ -922,18 +922,8 @@ class SSLVisionTransformer(DinoVisionTransformer):
                     B, _, C = out.shape
                     out = out.reshape(B, w // self.patch_size[0], h // self.patch_size[1],
                                     C).permute(0, 3, 1, 2).contiguous()
-                    #if self.output_cls_token:
-                    #    out = [out, x[:, 0]]
-                    #else:
-                    #    out = [out]
-                    #if self.final_norm:
-                    #    out = [self.norm(o) for o in out]
-                    #if self.detach:
-                    #    out = [o.detach() for o in out]
-                    #outs.append(out)
-            #print(x.shape)
-            #x = x.permute(0, 3, 1, 2)
-            return out#permute(0, 3, 1, 2)#tuple(outs)
+                    outs.append(out)
+            return tuple(outs)#permute(0, 3, 1, 2)#tuple(outs)
 
     def train(self, mode=True):
         super(SSLVisionTransformer, self).train(mode)
@@ -970,5 +960,3 @@ class SSLVisionTransformer(DinoVisionTransformer):
         trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
         all_params = sum(p.numel() for p in self.parameters())
         print(f'Initializing model with {trainable_params}/{all_params} trainable params')
-
-                    
