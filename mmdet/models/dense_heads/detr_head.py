@@ -7,6 +7,8 @@ import torch.nn.functional as F
 from mmcv.cnn import Linear
 from mmcv.cnn.bricks.transformer import FFN
 from mmengine.model import BaseModule
+from mmcv.ops import batched_nms
+
 from mmengine.structures import InstanceData
 from torch import Tensor
 
@@ -441,7 +443,7 @@ class DETRHead(BaseModule):
         labels = gt_bboxes.new_full((num_bboxes, ),
                                     self.num_classes,
                                     dtype=torch.long)
-        labels[pos_inds] = gt_labels[pos_assigned_gt_inds]
+        labels[pos_inds] = gt_labels[pos_assigned_gt_inds].long()
         label_weights = gt_bboxes.new_ones(num_bboxes)
 
         # bbox targets
@@ -603,6 +605,7 @@ class DETRHead(BaseModule):
         """
         assert len(cls_score) == len(bbox_pred)  # num_queries
         max_per_img = self.test_cfg.get('max_per_img', len(cls_score))
+        with_nms = self.test_cfg.get('nms', None)
         img_shape = img_meta['img_shape']
         # exclude background
         if self.loss_cls.use_sigmoid:
@@ -631,4 +634,11 @@ class DETRHead(BaseModule):
         results.bboxes = det_bboxes
         results.scores = scores
         results.labels = det_labels
+        if with_nms and results.bboxes.numel() > 0:
+            det_bboxes, keep_idxs = batched_nms(results.bboxes, results.scores,
+                                                results.labels,
+                                                self.test_cfg.nms)
+            results = results[keep_idxs]
+            results.scores = det_bboxes[:, -1]
+            results = results[:max_per_img]
         return results

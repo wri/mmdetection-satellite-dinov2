@@ -395,7 +395,7 @@ class DINOHead(DeformableDETRHead):
         labels = gt_bboxes.new_full((num_denoising_queries, ),
                                     self.num_classes,
                                     dtype=torch.long)
-        labels[pos_inds] = gt_labels[pos_assigned_gt_inds]
+        labels[pos_inds] = gt_labels[pos_assigned_gt_inds].long()
         label_weights = gt_bboxes.new_ones(num_denoising_queries)
 
         # bbox targets
