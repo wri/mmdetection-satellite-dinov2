@@ -865,7 +865,7 @@ class SSLVisionTransformer(DinoVisionTransformer):
         if (isinstance(self.init_cfg, dict)
                 and self.init_cfg.get('type') == 'Pretrained'):
             
-            checkpoint = torch.load(pretrained, map_location='cpu')
+            checkpoint = torch.load(self.init_cfg.get('checkpoint'))
             if 'state_dict' in checkpoint:
                 # timm checkpoint
                 state_dict = checkpoint['state_dict']

@@ -238,7 +238,7 @@ class CdnQueryGenerator(BaseModule):
             bboxes_normalized = bboxes / factor
             gt_bboxes_list.append(bboxes_normalized)
             gt_labels_list.append(sample.gt_instances.labels)
-        gt_labels = torch.cat(gt_labels_list)  # (num_target_total, 4)
+        gt_labels = torch.cat(gt_labels_list).type(torch.int64)  # (num_target_total, 4)
         gt_bboxes = torch.cat(gt_bboxes_list)
 
         num_target_list = [len(bboxes) for bboxes in gt_bboxes_list]
@@ -335,6 +335,8 @@ class CdnQueryGenerator(BaseModule):
         chosen_indice = torch.nonzero(p < (self.label_noise_scale * 0.5)).view(
             -1)  # Note `* 0.5`
         new_labels = torch.randint_like(chosen_indice, 0, self.num_classes)
+        #print("GT LABELS EXPAND", gt_labels_expand.dtype)
+        #print("NEW_LABELS", new_labels.dtype)
         noisy_labels_expand = gt_labels_expand.scatter(0, chosen_indice,
                                                        new_labels)
         dn_label_query = self.label_embedding(noisy_labels_expand)
