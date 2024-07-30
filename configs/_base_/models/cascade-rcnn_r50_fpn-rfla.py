@@ -110,8 +110,8 @@ model = dict(
                 ignore_iof_thr=-1,
                 gpu_assign_thr=512,
                 iou_calculator=dict(type='BboxDistanceMetric'),
-                assign_metric='kl', # KLD as RFD for label assignment
-                topk=[3,1],
+                assign_metric='wasserstein', # KLD as RFD for label assignment
+                topk=[4,1],
                 ratio=0.9), # decay factor
             #assigner=dict(
                 #type='MaxIoUAssigner',
