@@ -1,3 +1,12 @@
 *.ipynb_checkpoints
 *.pyc
 *pyc
+*.pth
+projects/CO-DETR/configs/.DS_Store
+projects/.DS_Store
+mmdet/models/.DS_Store
+mmdet/.DS_Store
+projects/.DS_Store
+projects/CO-DETR/.DS_Store
+detrex/.DS_Store
+detrex/projects/.DS_Store

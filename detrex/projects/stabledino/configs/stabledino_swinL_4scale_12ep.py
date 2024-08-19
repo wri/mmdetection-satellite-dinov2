@@ -1,0 +1,66 @@
+from detrex.config import get_config
+from .models.stablegdino_swin_large_384 import model
+#from .models.stabledino_ssl2 import model
+from detrex.config.configs.common.common_schedule import multistep_lr_scheduler
+
+# get default config
+dataloader = get_config("common/data/coco_detr.py").dataloader
+optimizer = get_config("common/optim.py").AdamW
+lr_multiplier = multistep_lr_scheduler(
+    values=[1.0, 0.1], 
+    warmup_steps=250, 
+    num_updates=50000, 
+    milestones=[45000], 
+    warmup_method="linear", 
+    warmup_factor=0.001, 
+)
+train = get_config("common/train.py").train
+
+# modify training config
+train.init_checkpoint = "/home/ubuntu/mmdetection/models/detectronswin.pkl"
+#train.init_checkpoint = "/home/ubuntu/mmdetection/models/detectronssl.pkl"
+#train.init_checkpoint = "detectron2://ImageNetPretrained/swin/swin_large_patch4_window7_224_22k.pth"
+
+train.output_dir = "./output/dino_swin_4scale_12ep"
+
+# max training iterations
+train.max_iter = 50000
+
+# run evaluation every 5000 iters
+train.eval_period = 1000
+
+# log training infomation every 20 iters
+train.log_period = 20
+
+# set random seed
+train.seed = 60
+
+# save checkpoint every 5000 iters
+train.checkpointer.period = 2000
+
+# gradient clipping for training
+train.clip_grad.enabled = True
+train.clip_grad.params.max_norm = 0.1
+train.clip_grad.params.norm_type = 2
+
+train.test_with_nms=0.1
+# set training devices
+train.device = "cuda"
+model.device = train.device
+
+# modify optimizer config
+optimizer.lr = 1e-4
+optimizer.betas = (0.9, 0.999)
+optimizer.weight_decay = 1e-4
+optimizer.params.lr_factor_func = lambda module_name: 0.1 if "backbone" in module_name else 1
+
+# modify dataloader config
+dataloader.train.num_workers = 2
+
+# please notice that this is total batch size.
+# surpose you're using 4 gpus for training and the batch size for
+# each gpu is 16/4 = 4
+dataloader.train.total_batch_size = 2
+
+# dump the testing results into output_dir for visualization
+dataloader.evaluator.output_dir = train.output_dir
