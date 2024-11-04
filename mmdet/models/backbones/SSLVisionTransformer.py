@@ -19,6 +19,127 @@ from functools import partial
 import pdb
 from mmdet.registry import MODELS
 
+from torch import nn
+
+class BilinearConvTranspose2d(nn.ConvTranspose2d):
+    """A conv transpose initialized to bilinear interpolation."""
+
+    def __init__(self, channels, stride, bias = True, kernel_size = 2, groups=1):
+        """Set up the layer.
+        Parameters
+        ----------
+        channels: int
+            The number of input and output channels
+        stride: int or tuple
+            The amount of upsampling to do
+        groups: int
+            Set to 1 for a standard convolution. Set equal to channels to
+            make sure there is no cross-talk between channels.
+        """
+        if isinstance(stride, int):
+            stride = (stride, stride)
+
+        assert groups in (1, channels), "Must use no grouping, " + \
+            "or one group per channel"
+
+        kernel_size = (2 * stride[0] - 1, 2 * stride[1] - 1)
+        padding = (stride[0] - 1, stride[1] - 1)
+        super().__init__(
+            channels, channels,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
+            groups=groups,
+            bias = bias)
+
+    def reset_parameters(self):
+        """Reset the weight and bias."""
+        #if self.bias == True:
+        if self.bias is not None:
+            nn.init.constant(self.bias, 0)
+        nn.init.constant(self.weight, 0)
+        bilinear_kernel = self.bilinear_kernel(self.stride)
+        for i in range(self.in_channels):
+            if self.groups == 1:
+                j = i
+            else:
+                j = 0
+            self.weight.data[i, j] = bilinear_kernel
+
+    @staticmethod
+    def bilinear_kernel(stride):
+        """Generate a bilinear upsampling kernel."""
+        num_dims = len(stride)
+
+        shape = (1,) * num_dims
+        bilinear_kernel = torch.ones(*shape)
+
+        # The bilinear kernel is separable in its spatial dimensions
+        # Build up the kernel channel by channel
+        for channel in range(num_dims):
+            channel_stride = stride[channel]
+            kernel_size = 2 * channel_stride - 1
+            # e.g. with stride = 4
+            # delta = [-3, -2, -1, 0, 1, 2, 3]
+            # channel_filter = [0.25, 0.5, 0.75, 1.0, 0.75, 0.5, 0.25]
+            delta = torch.arange(1 - channel_stride, channel_stride)
+            channel_filter = (1 - torch.abs(delta / channel_stride))
+            # Apply the channel filter to the current channel
+            shape = [1] * num_dims
+            shape[channel] = kernel_size
+            bilinear_kernel = bilinear_kernel * channel_filter.view(shape)
+        return bilinear_kernel
+
+
+def drop_path(x, drop_prob: float = 0.0, training: bool = False):
+    if drop_prob == 0.0 or not training:
+        return x
+    keep_prob = 1 - drop_prob
+    shape = (x.shape[0],) + (1,) * (x.ndim - 1)  # work with diff dim tensors, not just 2D ConvNets
+    random_tensor = x.new_empty(shape).bernoulli_(keep_prob)
+    if keep_prob > 0.0:
+        random_tensor.div_(keep_prob)
+    output = x * random_tensor
+    return output
+
+
+class DropPath(nn.Module):
+    """Drop paths (Stochastic Depth) per sample (when applied in main path of residual blocks)."""
+
+    def __init__(self, drop_prob=None):
+        super(DropPath, self).__init__()
+        self.drop_prob = drop_prob
+
+    def forward(self, x):
+        return drop_path(x, self.drop_prob, self.training)
+        
+
+
+def drop_add_residual_stochastic_depth(
+    x: Tensor,
+    residual_func: Callable[[Tensor], Tensor],
+    sample_drop_ratio: float = 0.0,
+) -> Tensor:
+    # 1) extract subset using permutation
+    b, n, d = x.shape
+    sample_subset_size = max(int(b * (1 - sample_drop_ratio)), 1)
+    brange = (torch.randperm(b, device=x.device))[:sample_subset_size]
+    x_subset = x[brange]
+
+    # 2) apply residual_func to get residual
+    residual = residual_func(x_subset)
+
+    x_flat = x.flatten(1)
+    residual = residual.flatten(1)
+
+    residual_scale_factor = b / sample_subset_size
+
+    # 3) add the residual
+    x_plus_residual = torch.index_add(x_flat, 0, brange, residual.to(dtype=x.dtype), alpha=residual_scale_factor)
+    return x_plus_residual.view_as(x)
+
+
+
 class MaskingGenerator:
     def __init__(
         self,
@@ -334,7 +455,16 @@ class PatchEmbed(nn.Module):
         if self.norm is not None:
             flops += Ho * Wo * self.embed_dim
         return flops
-
+        
+class Norm2d(nn.Module):
+    def __init__(self, embed_dim):
+        super().__init__()
+        self.ln = nn.LayerNorm(embed_dim, eps=1e-6)
+    def forward(self, x):
+        x = x.permute(0, 2, 3, 1)
+        x = self.ln(x)
+        x = x.permute(0, 3, 1, 2).contiguous()
+        return x
 
 class DinoVisionTransformer(nn.Module):
     """Vision Transformer
@@ -490,7 +620,38 @@ class DinoVisionTransformer(nn.Module):
             max_num_patches=0.5 * img_size // patch_size * img_size // patch_size,
         )
         self.mask_token = nn.Parameter(torch.zeros(1, embed_dim))
+        '''
+        self.fpn1 = nn.Sequential(
+            nn.ConvTranspose2d(embed_dim, embed_dim // 2, kernel_size=2, stride=2),
+            Norm2d(embed_dim // 2),
+            nn.GELU(),
+            nn.ConvTranspose2d(embed_dim // 2, embed_dim // 4, kernel_size=2, stride=2),
+        )
 
+        self.fpn2 = nn.Sequential(
+            nn.ConvTranspose2d(embed_dim, embed_dim // 2, kernel_size=2, stride=2),
+        )
+
+        self.fpn3 = nn.Identity()
+
+        self.fpn4 = nn.MaxPool2d(kernel_size=2, stride=2)
+ 
+        '''
+        self.fpn1 = nn.Sequential(
+                nn.ConvTranspose2d(embed_dim, embed_dim // 2, kernel_size=2, stride=2, bias = False),
+                Norm2d(embed_dim // 2),
+                nn.GELU(),
+                nn.ConvTranspose2d(embed_dim // 2, embed_dim // 4, kernel_size=2, stride=2, bias = True),
+        )
+
+        self.fpn2 = nn.Sequential(
+            nn.ConvTranspose2d(embed_dim, embed_dim // 2, kernel_size=2, stride=2),
+        )
+
+        self.fpn3 = nn.Identity()
+
+        self.fpn4 = nn.MaxPool2d(kernel_size=2, stride=2)
+        
         # if weight_init != "skip":
         # self.init_weights(weight_init)
 
@@ -668,14 +829,27 @@ class DinoVisionTransformer(nn.Module):
         for blk in self.blocks:
             x = blk(x)
 
-        x_norm = self.norm(x)
-        return {
-            "x_norm_clstoken": x_norm[:, 0],
-            "x_norm_patchtokens": x_norm[:, 1:],
-            "x_prenorm": x,
-            "masks": masks,
-            "n_masked_patches_upperbound": n_masked_patches_upperbound,
-        }
+        B, C, H, W = x.shape
+        x, (Hp, Wp) = self.patch_embed(x)
+        batch_size, seq_len, _ = x.size()
+
+        #x_norm = self.norm(x)
+        features = list(map(lambda x: x.permute(0, 2, 1).reshape(B, -1, Hp, Wp), features))
+        ops = [self.fpn1, self.fpn2, self.fpn3, self.fpn4]
+        print("THE OPS ARE GOOD")
+        for i in range(len(ops)):
+            #features.append(ops[i](xp))
+            features[i] = ops[i](features[i])
+            print(features[i].shape)
+        return features
+            
+       #return {
+       #     "x_norm_clstoken": features[:, 0],
+       #     "x_norm_patchtokens": features[:, 1:],
+       #     "x_prenorm": x,
+       #     "masks": masks,
+       #     "n_masked_patches_upperbound": n_masked_patches_upperbound,
+       # }
 
     def get_intermediate_layers(self, x, n=1):
         x, _, _ = self.prepare_tokens(x)
@@ -692,7 +866,7 @@ class DinoVisionTransformer(nn.Module):
         if is_training:
             return ret
         else:
-            return ret["x_norm_clstoken"]
+            return ret# ret["x_norm_clstoken"]
 
 
 
@@ -828,6 +1002,8 @@ class SSLVisionTransformer(DinoVisionTransformer):
         self.adapad = AdaptivePadding(kernel_size=self.patch_size, stride=self.patch_size, padding='same')
         if pretrained:
             self.init_weights(pretrained)
+
+        
         
         self._freeze_stages()
 
@@ -860,12 +1036,22 @@ class SSLVisionTransformer(DinoVisionTransformer):
         pos_embed = torch.cat((cls_token_weight, pos_embed_weight), dim=1)
         return pos_embed
     
-    def init_weights(self, pretrained = '/home/ubuntu/mmdetection/models/SSLhuge_satellite.pth'):
+    def init_weights(self, pretrained = '/home/ubuntu/mmdetection/models/SSLLarge.pth'):
         print("init_weights", pretrained)
+        counter = 0
+        '''
+        for module_name, module in self.named_modules():
+            #if 'block' in module_name:
+                for module_param_name, value in module.named_parameters(recurse=False):
+                    if 'weight' in module_param_name:
+                        counter += 1
+                        if counter < 5:
+                            print(module_name, module_param_name, value.detach().cpu().numpy().flatten()[:5])
+        '''
         if (isinstance(self.init_cfg, dict)
                 and self.init_cfg.get('type') == 'Pretrained'):
-            
-            checkpoint = torch.load(self.init_cfg.get('checkpoint'))
+            print("INIT CONFIG IS GOOD")
+            checkpoint = torch.load(self.init_cfg.get('checkpoint'), map_location = torch.device("cuda"))
             if 'state_dict' in checkpoint:
                 # timm checkpoint
                 state_dict = checkpoint['state_dict']
@@ -896,6 +1082,14 @@ class SSLVisionTransformer(DinoVisionTransformer):
                         (h // self.patch_size[0], w // self.patch_size[1]),
                         (pos_size, pos_size), self.interpolate_mode)
             self.load_state_dict(state_dict, strict = False)
+            counter = 0
+            #for module_name, module in self.named_modules():
+            #if 'block' in module_name:
+                #for module_param_name, value in module.named_parameters(recurse=False):
+                    #if 'weight' in module_param_name:
+                        #counter += 1
+                        #if counter < 5:
+                            #print(module_name, module_param_name, value.detach().cpu().numpy().flatten()[:5])
         else:
             super(SSLVisionTransformer, self).init_weights()
             
@@ -923,6 +1117,12 @@ class SSLVisionTransformer(DinoVisionTransformer):
                     out = out.reshape(B, w // self.patch_size[0], h // self.patch_size[1],
                                     C).permute(0, 3, 1, 2).contiguous()
                     outs.append(out)
+            ops = [self.fpn1, self.fpn2, self.fpn3, self.fpn4]
+            #print("THE OPS ARE GOOD")
+            for i in range(len(ops)):
+                #features.append(ops[i](xp))
+                outs[i] = ops[i](outs[i])
+                #print(outs[i].shape)
             return tuple(outs)#permute(0, 3, 1, 2)#tuple(outs)
 
     def train(self, mode=True):
@@ -935,8 +1135,8 @@ class SSLVisionTransformer(DinoVisionTransformer):
         trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
         all_params = sum(p.numel() for p in self.parameters())
         print(f'Initializing model with {trainable_params}/{all_params} trainable params')
-        for param in self.parameters():
-            param.requires_grad = False
+        #for param in self.parameters():
+        #    param.requires_grad = False
         if self.frozen_stages >= 0:
             self.patch_embed.eval()
             for m in [self.patch_embed]:

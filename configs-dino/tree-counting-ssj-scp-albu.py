@@ -15,7 +15,7 @@ metainfo = {
     'classes': ('tree'),
     'palette': [
         (220, 20, 60),
-    ]
+    ] 
 }
 # 40% defocus, 55% fog
 
@@ -35,70 +35,70 @@ albu_train_transforms = [
             dict(type='Sequential',# Simulating haze - strong fog, strong defocus, strong B/C
                  transforms = [
                      dict(type='RandomFog',
-                         p=0.7,
-                         fog_coef_lower=0.25,
-                         fog_coef_upper=0.99,
+                         p=0.55,
+                         fog_coef_lower=0.15,
+                         fog_coef_upper=0.8,
                          alpha_coef=0.1),
                      dict(
                         type='Defocus',
-                        p=1.,
-                        radius=(4,10),
+                        p=0.8,
+                        radius=(2,5),
                         alias_blur=(0.1, .5)),
                      dict( 
                         type='RandomBrightnessContrast',
-                        brightness_limit=[.25, .45],
-                        contrast_limit=[-0.45, -0.25],
-                        p=1.
-                     )], p = 0.2),
+                        brightness_limit=[.05, .25],
+                        contrast_limit=[-0.25, -0.05],
+                        p=0.6
+                     )], p = 0.05), # 0.2
             dict(type='Sequential', # Simulating mild B/C, mild Fog, mild defocus
                  transforms = [
                     dict(type='RandomFog',
                          p=0.4,
-                         fog_coef_lower=0.25,
-                         fog_coef_upper=0.99,
+                         fog_coef_lower=0.1,
+                         fog_coef_upper=0.7,
                          alpha_coef=0.1),
                     dict(
                         type='Defocus',
-                        p=0.4,
-                        radius=(2,7),
-                        alias_blur=(0.1, .5)),
+                        p=0.25,
+                        radius=(2,4),
+                        alias_blur=(0.1, .4)),
                     dict(
                         type='RandomBrightnessContrast',
-                        brightness_limit=[-.3, .3], #-.4, .4
-                        contrast_limit=[-.3, .3], # -.4, .4
+                        brightness_limit=[-.2, .2], #-.4, .4
+                        contrast_limit=[-.2, .2], # -.4, .4
                         p=1.)
-                 ], p = 0.65),
+                 ], p = 0.25), # 0.7
             dict(type='Sequential', # Simulating cloud shadow
                  transforms = [
                     dict(
                         type='Defocus',
-                        p=0.4,
-                        radius=(2,5),
+                        p=0.3,
+                        radius=(2,3),
                         alias_blur=(0.1, .5)),
                     dict( # Simulating cloud shadow
                         type = 'RandomGamma',
                         gamma_limit=(150, 195),
-                        p = 0.05) # .1
-                 ], p = 0.15),
-            ], p = 0.8),
+                        p = 0.1) # .1
+                 ], p = 0.01), # 0.1
+            ], p = 0.25), # 0.7
     dict(
         type='HueSaturationValue',
-        hue_shift_limit=10, #15
-        sat_shift_limit=20, #25
-        val_shift_limit=20, #25
+        hue_shift_limit=8, #15
+        sat_shift_limit=12, #25
+        val_shift_limit=12, #25
         p=0.5), # 0.6
     dict(
         type='GaussNoise',
         always_apply=False,
         p=0.5,
-        var_limit = (100, 500),
+        var_limit = (10, 200),
         per_channel = False,
         mean = 0)
 ]
 load_pipeline = [
     dict(type='LoadImageFromFile', backend_args=None),
     dict(type='LoadAnnotations', with_bbox=True),
-    dict(type='FilterAnnotations', min_gt_bbox_wh=(5e-3, 5e-3)),
+    #dict(type='FilterAnnotations', min_gt_bbox_wh=(1e-3, 1e-3)),
     dict(
         type='Albu',
         transforms=albu_train_transforms,
@@ -111,13 +111,20 @@ load_pipeline = [
         keymap={
             'img': 'image',
             'gt_bboxes': 'bboxes'
-        },
+       },
         skip_img_without_anno=False),
+    dict(
+        type='RandomCrop',
+        crop_type='absolute_range',
+        crop_size=image_size,
+        recompute_bbox=True,
+        allow_negative_crop=True),
     dict(
         type='RandomResize',
         scale=image_size,
-        ratio_range=(1, 1.5),
+        ratio_range=(0.75, 1.25),
         keep_ratio=True),
+    dict(type='Pad', size=image_size),
     dict(
         type='RandomCrop',
         crop_type='absolute_range',
@@ -127,10 +134,9 @@ load_pipeline = [
     #dict(type='YOLOXHSVRandomAug', hue_delta=3, saturation_delta=10, value_delta=10),
     dict(type='RandomFlip', prob=0.5, direction = 'horizontal'),
     dict(type='RandomFlip', prob=0.5, direction = 'vertical'),
-    dict(type='FilterAnnotations', min_gt_bbox_wh=(1e-5, 1e-5)),
+    dict(type='FilterAnnotations', min_gt_bbox_wh=(5e-5, 5e-5)),
+    dict(type='LimitBBoxes', max_bboxes = 1500),
     dict(type='PackDetInputs')
-    #dict(type='RandomFlip', prob=0.5, direction = 'vertical'),
-    #dict(type='Pad', size=image_size),
 ]
 
 train_dataset = dict(
@@ -158,7 +164,8 @@ train_dataloader = dict(
 test_pipeline = [
     dict(type='LoadImageFromFile', backend_args=None),
     dict(type='LoadAnnotations', with_bbox=True),
-    #dict(type='RandomCrop', crop_size=(384, 384), allow_negative_crop = True, recompute_bbox = True),
+    dict(type='Pad', size=image_size),
+    #dict(type='RandomCrop', crop_size=(512, 512), allow_negative_crop = True, recompute_bbox = True),
     dict(type='Resize', scale=(512, 512), keep_ratio=True),
     #dict(type='Pad', size=image_size, pad_val=dict(img=(114, 114, 114))),
     
@@ -171,14 +178,14 @@ test_pipeline = [
 
 
 test_dataloader = dict(
-    batch_size=2,
+    batch_size=1,
     num_workers=0,
     dataset=dict(
         data_root=data_root,
         type=dataset_type,
         metainfo=metainfo,
-        data_prefix=dict(img='train/'),
-        ann_file='train.json',
+        data_prefix=dict(img='val/'),
+        ann_file='val.json',
         pipeline=test_pipeline,
         backend_args=None)
     )
@@ -187,7 +194,7 @@ val_dataloader = test_dataloader
 
 val_evaluator = dict(
     type='CocoMetric',
-    ann_file=data_root + 'train.json',
+    ann_file=data_root + 'val.json',
     metric=['bbox'],
     format_only=False)
 test_cfg = dict(type='TestLoop')
@@ -200,7 +207,7 @@ default_hooks = dict(
     timer=dict(type='IterTimerHook'),
     logger=dict(type='LoggerHook', interval=25),
     param_scheduler=dict(type='ParamSchedulerHook'),
-    checkpoint=dict(type='CheckpointHook', interval=1, max_keep_ckpts=30),
+    checkpoint=dict(type='CheckpointHook', interval=1, max_keep_ckpts=15),
     sampler_seed=dict(type='DistSamplerSeedHook'),
     visualization=dict(type='DetVisualizationHook'))
 
@@ -217,6 +224,9 @@ log_processor = dict(type='LogProcessor', window_size=10, by_epoch=False)
 
 log_level = 'DEBUG'
 resume = False
+
+auto_scale_lr = dict(enable=False, base_batch_size=16)
+
 
 visualizer = dict(vis_backends=[dict(type='LocalVisBackend'),
     dict(type='TensorboardVisBackend'), dict(type='DetVisualizationHook', draw = True, interval = 1, show = True)])
