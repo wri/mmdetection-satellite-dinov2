@@ -247,6 +247,25 @@ class Resize(MMCV_Resize):
 
 
 @TRANSFORMS.register_module()
+class LimitBBoxes:
+    def __init__(self, max_bboxes):
+        self.max_bboxes = max_bboxes
+
+    def __call__(self, results):
+        num_bboxes = len(results['gt_bboxes'])
+        if num_bboxes > self.max_bboxes:
+            indices = np.random.choice(num_bboxes, self.max_bboxes, replace=False)
+            results['gt_bboxes'] = results['gt_bboxes'][indices]
+            if 'gt_ignore_flags' in results:
+                results['gt_ignore_flags'] = results['gt_ignore_flags'][indices]
+            if 'gt_bboxes_labels' in results:
+                results['gt_bboxes_labels'] = results['gt_bboxes_labels'][indices]
+            if 'gt_labels' in results:
+                results['gt_labels'] = results['gt_labels'][indices]
+        return results
+
+
+@TRANSFORMS.register_module()
 class FixScaleResize(Resize):
     """Compared to Resize, FixScaleResize fixes the scaling issue when
     `keep_ratio=true`."""
