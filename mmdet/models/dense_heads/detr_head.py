@@ -635,10 +635,13 @@ class DETRHead(BaseModule):
         results.scores = scores
         results.labels = det_labels
         if with_nms and results.bboxes.numel() > 0:
+            #print("APPLYING NMSSSSS")
+            #print(len(results))
             det_bboxes, keep_idxs = batched_nms(results.bboxes, results.scores,
                                                 results.labels,
                                                 self.test_cfg.nms)
             results = results[keep_idxs]
+            #print(len(results))
             results.scores = det_bboxes[:, -1]
             results = results[:max_per_img]
         return results

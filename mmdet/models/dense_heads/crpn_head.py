@@ -526,7 +526,8 @@ class StageRefineRPNHead(RPNHead):
         if not sampling_results_list[0].avg_factor_with_neg:
             # 200 is hard-coded average factor,
             # which follows guided anchoring.
-            avg_factor = sum([label.numel() for label in labels_list]) / 200.0
+            # CHANGE TO 50
+            avg_factor = sum([label.numel() for label in labels_list]) / 50.0
 
         # change per image, per level anchor_list to per_level, per_image
         mlvl_anchor_list = list(zip(*anchor_list))

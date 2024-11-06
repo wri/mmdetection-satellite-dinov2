@@ -39,6 +39,10 @@ class DeformableDetrTransformerEncoder(DetrTransformerEncoder):
 
         self.embed_dims = self.layers[0].embed_dims
 
+        self.fusion_layer = nn.Sequential(
+                    nn.Linear(self.embed_dims * (self.num_layers + 1), self.embed_dims, bias = False),
+                    nn.LayerNorm(self.embed_dims))
+
     def forward(self, query: Tensor, query_pos: Tensor,
                 key_padding_mask: Tensor, spatial_shapes: Tensor,
                 level_start_index: Tensor, valid_ratios: Tensor,
@@ -67,6 +71,8 @@ class DeformableDetrTransformerEncoder(DetrTransformerEncoder):
         """
         reference_points = self.get_encoder_reference_points(
             spatial_shapes, valid_ratios, device=query.device)
+        query_list = [query]
+        
         for layer in self.layers:
             query = layer(
                 query=query,
@@ -77,6 +83,9 @@ class DeformableDetrTransformerEncoder(DetrTransformerEncoder):
                 valid_ratios=valid_ratios,
                 reference_points=reference_points,
                 **kwargs)
+            query_list.append(query)
+        #print("QUERY IS DONE~!!! :)")
+        query = self.fusion_layer(torch.cat(query_list, dim=-1))
         return query
 
     @staticmethod

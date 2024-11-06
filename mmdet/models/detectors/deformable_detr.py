@@ -193,7 +193,7 @@ class DeformableDETR(DetectionTransformer):
             spatial_shape = torch._shape_as_tensor(feat)[2:].to(feat.device)
             # [bs, c, h_lvl, w_lvl] -> [bs, h_lvl*w_lvl, c]
             feat = feat.view(batch_size, c, -1).permute(0, 2, 1)
-            pos_embed = pos_embed.view(batch_size, c, -1).permute(0, 2, 1)
+            pos_embed = pos_embed.reshape(batch_size, c, -1).permute(0, 2, 1)
             lvl_pos_embed = pos_embed + self.level_embed[lvl].view(1, 1, -1)
             # [bs, h_lvl, w_lvl] -> [bs, h_lvl*w_lvl]
             if mask is not None:

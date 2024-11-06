@@ -11,6 +11,8 @@ from mmdet.structures.bbox import bbox_xyxy_to_cxcywh
 from mmdet.utils import OptConfigType
 from .deformable_detr_layers import DeformableDetrTransformerDecoder
 from .utils import MLP, coordinate_to_encoding, inverse_sigmoid
+import functools
+import math
 
 
 class DinoTransformerDecoder(DeformableDetrTransformerDecoder):
@@ -96,6 +98,321 @@ class DinoTransformerDecoder(DeformableDetrTransformerDecoder):
                 reference_points=reference_points_input,
                 **kwargs)
 
+            if reg_branches is not None:
+                tmp = reg_branches[lid](query)
+                assert reference_points.shape[-1] == 4
+                new_reference_points = tmp + inverse_sigmoid(
+                    reference_points, eps=1e-3)
+                new_reference_points = new_reference_points.sigmoid()
+                reference_points = new_reference_points.detach()
+
+            if self.return_intermediate:
+                intermediate.append(self.norm(query))
+                intermediate_reference_points.append(new_reference_points)
+                # NOTE this is for the "Look Forward Twice" module,
+                # in the DeformDETR, reference_points was appended.
+
+        if self.return_intermediate:
+            return torch.stack(intermediate), torch.stack(
+                intermediate_reference_points)
+
+        return query, reference_points
+
+
+def box_rel_encoding(src_boxes, tgt_boxes, eps=1e-5):
+    # construct position relation
+    xy1, wh1 = src_boxes.split([2, 2], -1)
+    xy2, wh2 = tgt_boxes.split([2, 2], -1)
+    delta_xy = torch.abs(xy1.unsqueeze(-2) - xy2.unsqueeze(-3))
+    delta_xy = torch.log(delta_xy / (wh1.unsqueeze(-2) + eps) + 1.0)
+    delta_wh = torch.log((wh1.unsqueeze(-2) + eps) / (wh2.unsqueeze(-3) + eps))
+    pos_embed = torch.cat([delta_xy, delta_wh], -1)  # [batch_size, num_boxes1, num_boxes2, 4]
+
+    return pos_embed
+
+@functools.lru_cache  # use lru_cache to avoid redundant calculation for dim_t
+def get_dim_t(num_pos_feats: int, temperature: int, device: torch.device):
+    dim_t = torch.arange(num_pos_feats // 2, dtype=torch.float32, device=device)
+    dim_t = temperature**(dim_t * 2 / num_pos_feats)
+    return dim_t  # (0, 2, 4, ..., ⌊n/2⌋*2)
+
+def exchange_xy_fn(pos_res):
+    index = torch.cat([
+        torch.arange(1, -1, -1, device=pos_res.device),
+        torch.arange(2, pos_res.shape[-2], device=pos_res.device),
+    ])
+    pos_res = torch.index_select(pos_res, -2, index)
+    return pos_res
+
+def get_sine_pos_embed(
+    pos_tensor: Tensor,
+    num_pos_feats: int = 128,
+    temperature: int = 10000,
+    scale: float = 2 * math.pi,
+    exchange_xy: bool = True,
+) -> Tensor:
+    """Generate sine position embedding for a position tensor
+
+    :param pos_tensor: shape as (..., 2*n).
+    :param num_pos_feats: projected shape for each float in the tensor, defaults to 128
+    :param temperature: the temperature used for scaling the position embedding, defaults to 10000
+    :param exchange_xy: exchange pos x and pos. For example,
+        input tensor is [x, y], the results will be [pos(y), pos(x)], defaults to True
+    :return: position embedding with shape (None, n * num_pos_feats)
+    """
+    dim_t = get_dim_t(num_pos_feats, temperature, pos_tensor.device)
+
+    pos_res = pos_tensor.unsqueeze(-1) * scale / dim_t
+    pos_res = torch.stack((pos_res.sin(), pos_res.cos()), dim=-1).flatten(-2)
+    if exchange_xy:
+        pos_res = exchange_xy_fn(pos_res)
+    pos_res = pos_res.flatten(-2)
+    return pos_res
+    
+
+class PositionRelationEmbedding(nn.Module):
+    def __init__(
+        self,
+        embed_dim=256,
+        num_heads=8,
+        temperature=10000.,
+        scale=100.,
+        activation_layer=nn.ReLU,
+        inplace=True,
+    ):
+        super().__init__()
+        self.pos_proj = Conv2dNormActivation(
+            embed_dim * 4,
+            num_heads,
+            kernel_size=1,
+            inplace=inplace,
+            norm_layer=None,
+            activation_layer=activation_layer,
+        )
+        self.pos_func = functools.partial(
+            get_sine_pos_embed,
+            num_pos_feats=embed_dim,
+            temperature=temperature,
+            scale=scale,
+            exchange_xy=False,
+        )
+
+    def forward(self, src_boxes: Tensor, tgt_boxes: Tensor = None):
+        if tgt_boxes is None:
+            tgt_boxes = src_boxes
+        # src_boxes: [batch_size, num_boxes1, 4]
+        # tgt_boxes: [batch_size, num_boxes2, 4]
+        torch._assert(src_boxes.shape[-1] == 4, f"src_boxes much have 4 coordinates")
+        torch._assert(tgt_boxes.shape[-1] == 4, f"tgt_boxes must have 4 coordinates")
+        with torch.no_grad():
+            pos_embed = box_rel_encoding(src_boxes, tgt_boxes)
+            pos_embed = self.pos_func(pos_embed).permute(0, 3, 1, 2)
+        pos_embed = self.pos_proj(pos_embed)
+
+        return pos_embed.clone()
+
+
+class ConvNormActivation(torch.nn.Sequential):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int = 3,
+        stride: int = 1,
+        padding = None,
+        groups: int = 1,
+        norm_layer = torch.nn.BatchNorm2d,
+        activation_layer = torch.nn.ReLU,
+        dilation: int = 1,
+        inplace  = True,
+        bias= None,
+        conv_layer= torch.nn.Conv2d,
+    ) -> None:
+
+        if padding is None:
+            padding = (kernel_size - 1) // 2 * dilation
+        if bias is None:
+            bias = norm_layer is None
+
+        layers = [
+            conv_layer(
+                in_channels,
+                out_channels,
+                kernel_size,
+                stride,
+                padding,
+                dilation=dilation,
+                groups=groups,
+                bias=bias,
+            )
+        ]
+
+        if norm_layer is not None:
+            layers.append(norm_layer(out_channels))
+
+        if activation_layer is not None:
+            params = {} if inplace is None else {"inplace": inplace}
+            layers.append(activation_layer(**params))
+        super().__init__(*layers)
+        self.out_channels = out_channels
+
+        if self.__class__ == ConvNormActivation:
+            warnings.warn(
+                "Don't use ConvNormActivation directly, please use Conv2dNormActivation and Conv3dNormActivation instead."
+            )
+
+
+class Conv2dNormActivation(ConvNormActivation):
+    """
+    Configurable block used for Convolution2d-Normalization-Activation blocks.
+
+    Args:
+        in_channels (int): Number of channels in the input image
+        out_channels (int): Number of channels produced by the Convolution-Normalization-Activation block
+        kernel_size: (int, optional): Size of the convolving kernel. Default: 3
+        stride (int, optional): Stride of the convolution. Default: 1
+        padding (int, tuple or str, optional): Padding added to all four sides of the input. Default: None, in which case it will calculated as ``padding = (kernel_size - 1) // 2 * dilation``
+        groups (int, optional): Number of blocked connections from input channels to output channels. Default: 1
+        norm_layer (Callable[..., torch.nn.Module], optional): Norm layer that will be stacked on top of the convolution layer. If ``None`` this layer wont be used. Default: ``torch.nn.BatchNorm2d``
+        activation_layer (Callable[..., torch.nn.Module], optional): Activation function which will be stacked on top of the normalization layer (if not None), otherwise on top of the conv layer. If ``None`` this layer wont be used. Default: ``torch.nn.ReLU``
+        dilation (int): Spacing between kernel elements. Default: 1
+        inplace (bool): Parameter for the activation layer, which can optionally do the operation in-place. Default ``True``
+        bias (bool, optional): Whether to use bias in the convolution layer. By default, biases are included if ``norm_layer is None``.
+
+    """
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int = 3,
+        stride: int = 1,
+        padding = None,
+        groups: int = 1,
+        norm_layer = torch.nn.BatchNorm2d,
+        activation_layer = torch.nn.ReLU,
+        dilation: int = 1,
+        inplace  = True,
+        bias = None,
+    ) -> None:
+
+        super().__init__(
+            in_channels,
+            out_channels,
+            kernel_size,
+            stride,
+            padding,
+            groups,
+            norm_layer,
+            activation_layer,
+            dilation,
+            inplace,
+            bias,
+            torch.nn.Conv2d,
+        )
+
+
+class DinoPlusTransformerDecoder(DeformableDetrTransformerDecoder):
+    """Transformer decoder of DINO."""
+
+    def _init_layers(self) -> None:
+        """Initialize decoder layers."""
+        super()._init_layers()
+        self.ref_point_head = MLP(self.embed_dims * 2, self.embed_dims,
+                                  self.embed_dims, 2)
+        self.norm = nn.LayerNorm(self.embed_dims)
+        self.position_relation_embedding = PositionRelationEmbedding(16, 4)
+
+    def forward(self, query: Tensor, value: Tensor, key_padding_mask: Tensor,
+                self_attn_mask: Tensor, reference_points: Tensor,
+                spatial_shapes: Tensor, level_start_index: Tensor,
+                valid_ratios: Tensor, reg_branches: nn.ModuleList,
+                **kwargs) -> Tuple[Tensor]:
+        """Forward function of Transformer decoder.
+
+        Args:
+            query (Tensor): The input query, has shape (num_queries, bs, dim).
+            value (Tensor): The input values, has shape (num_value, bs, dim).
+            key_padding_mask (Tensor): The `key_padding_mask` of `self_attn`
+                input. ByteTensor, has shape (num_queries, bs).
+            self_attn_mask (Tensor): The attention mask to prevent information
+                leakage from different denoising groups and matching parts, has
+                shape (num_queries_total, num_queries_total). It is `None` when
+                `self.training` is `False`.
+            reference_points (Tensor): The initial reference, has shape
+                (bs, num_queries, 4) with the last dimension arranged as
+                (cx, cy, w, h).
+            spatial_shapes (Tensor): Spatial shapes of features in all levels,
+                has shape (num_levels, 2), last dimension represents (h, w).
+            level_start_index (Tensor): The start index of each level.
+                A tensor has shape (num_levels, ) and can be represented
+                as [0, h_0*w_0, h_0*w_0+h_1*w_1, ...].
+            valid_ratios (Tensor): The ratios of the valid width and the valid
+                height relative to the width and the height of features in all
+                levels, has shape (bs, num_levels, 2).
+            reg_branches: (obj:`nn.ModuleList`): Used for refining the
+                regression results.
+
+        Returns:
+            tuple[Tensor]: Output queries and references of Transformer
+                decoder
+
+            - query (Tensor): Output embeddings of the last decoder, has
+              shape (num_queries, bs, embed_dims) when `return_intermediate`
+              is `False`. Otherwise, Intermediate output embeddings of all
+              decoder layers, has shape (num_decoder_layers, num_queries, bs,
+              embed_dims).
+            - reference_points (Tensor): The reference of the last decoder
+              layer, has shape (bs, num_queries, 4)  when `return_intermediate`
+              is `False`. Otherwise, Intermediate references of all decoder
+              layers, has shape (num_decoder_layers, bs, num_queries, 4). The
+              coordinates are arranged as (cx, cy, w, h)
+        """
+        intermediate = []
+        intermediate_reference_points = [reference_points]
+        outputs_classes, outputs_coords = [], []
+        pos_relation = self_attn_mask  # fallback pos_relation to attn_mas
+        
+        for lid, layer in enumerate(self.layers):
+            if reference_points.shape[-1] == 4:
+                reference_points_input = \
+                    reference_points[:, :, None] * torch.cat(
+                        [valid_ratios, valid_ratios], -1)[:, None]
+            else:
+                assert reference_points.shape[-1] == 2
+                reference_points_input = \
+                    reference_points[:, :, None] * valid_ratios[:, None]
+
+            query_sine_embed = coordinate_to_encoding(
+                reference_points_input[:, :, 0, :])
+            query_pos = self.ref_point_head(query_sine_embed)
+            
+
+            query = layer(
+                query,
+                query_pos=query_pos,
+                value=value,
+                key_padding_mask=key_padding_mask,
+                self_attn_mask=self_attn_mask,
+                spatial_shapes=spatial_shapes,
+                level_start_index=level_start_index,
+                valid_ratios=valid_ratios,
+                reference_points=reference_points_input,
+                **kwargs)
+
+            output_class = super().bbox_head.cls_branches[lid](self.norm(query))
+            output_coord = super().bbox_head.reg_branches[lid](self.norm(query))
+            output_coord = output_coord + inverse_sigmoid(reference_points)
+            output_coord = output_coord.sigmoid()
+            outputs_classes.append(output_class)
+            outputs_coords.append(output_coord)
+
+            src_boxes = tgt_boxes if lid >= 1 else reference_points
+            tgt_boxes = output_coord
+            pos_relation = self.position_relation_embedding(src_boxes, tgt_boxes).flatten(0, 1)
+            if self_attn_mask is not None:
+                pos_relation.masked_fill_(self_attn_mask, float("-inf"))
+
+            
             if reg_branches is not None:
                 tmp = reg_branches[lid](query)
                 assert reference_points.shape[-1] == 4

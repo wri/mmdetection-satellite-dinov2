@@ -262,7 +262,8 @@ class DINOHead(DeformableDETRHead):
                 scores[pos_inds] = bbox_overlaps(
                     pos_decode_bbox_pred.detach(),
                     pos_decode_bbox_targets,
-                    is_aligned=True)
+                    is_aligned=True,
+                    mode='giou')
                 loss_cls = self.loss_cls(
                     cls_scores, (labels, scores),
                     weight=label_weights,
